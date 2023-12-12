@@ -1,0 +1,10 @@
+version: '3.8'
+
+services:
+  vm-server:
+    image: volex/vm-server
+    build: .
+    ports:
+      - '80:80'
+    environment:
+      - BROKER_HOST=host.docker.internal
