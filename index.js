@@ -1,3 +1,11 @@
+const { Worker } = require('node:worker_threads');
+const {
+	setTransient,
+	paramsManager,
+	inputsManager,
+	outputsManager,
+} = require('./volex-core.js');
+
 // Connection to broker
 const { Events, Services, DataType } = require('./enums.js');
 const io_client = require('socket.io-client');
@@ -17,6 +25,24 @@ function register() {
 				console.log(`Retrying in 2 seconds`);
 				return setTimeout(register, 2000);
 			}
+			socket.timeout(2000).emit(
+				Events.MESSAGE,
+				{
+					to: Services.BACKEND,
+					event: Events.VM_CONFIG,
+				},
+				(err, resp) => {
+					err ??= resp.err;
+					if (err) {
+						console.log('Error while requesting active scripts:', err);
+						return;
+					}
+					const agents = JSON.parse(resp.data);
+					for (const { id, script } of agents) {
+						startWorker(id, script);
+					}
+				}
+			);
 		}
 	);
 }
@@ -30,7 +56,60 @@ socket.on('connect_error', err => {
 	console.log(`Could not connect due to `, err);
 });
 
+const workersMap = new Map();
+
+function startWorker(agentId, script) {
+	const worker = new Worker('./vm.js', {
+		workerData: {
+			id: agentId,
+			script,
+		},
+	});
+
+	worker.on('message', m => console.log(`Message: ${m}`));
+	worker.on('error', e => console.log(`Error: ${e}`));
+	worker.on('exit', code => {
+		console.log(`Worker stopped with exit code ${code}`);
+	});
+
+	workersMap.set(agentId, worker);
+}
+
+socket.on(Events.NEW_AGENT, ({ id, blueprintId, macAddr }) => {
+	if (macAddr != null) {
+		return;
+	}
+
+	socket.timeout(2000).emit(
+		Events.MESSAGE,
+		{
+			to: Services.BACKEND,
+			event: Events.BLUEPRINT_NAME,
+			data: blueprintId,
+		},
+		(err, resp) => {
+			err ??= resp.err;
+			if (err) {
+				return console.log(
+					`Error while getting the name for blueprint with id ${id}:`,
+					err
+				);
+			}
+			const script = resp.data;
+			if (!script) {
+				return console.log(
+					'Could not get blueprint name for blueprint with id:',
+					blueprintId
+				);
+			}
+			startWorker(id, script);
+		}
+	);
+});
+
 // FILE SERVER
+setTransient(true);
+
 const fs = require('fs');
 const path = require('node:path');
 
@@ -41,8 +120,14 @@ const app = express();
 const PORT = process.env.PORT ?? 80;
 
 function loadScript(path) {
+	path = `./${path}`;
 	try {
-		return require(`./${path}`);
+		let text = fs.readFileSync(path);
+		text = text
+			.toLocaleString()
+			.replace(/require\(.*volex.*\)/gi, "require('../volex.js')");
+		fs.writeFileSync(path, text);
+		return require(path);
 	} catch (err) {
 		console.log('error while loading script: ', err.toString());
 	}
@@ -71,16 +156,14 @@ app.post('/scripts', upload.single('script'), (req, res) => {
 		return res.status(500).send('Not connected to bridge');
 	}
 	const file = req.file;
-	// TODO: maybe release memory after using what's needed
 	const script = loadScript(file.path);
-	const inputs = script?.inputs ?? [];
-	const outputs = script?.outputs ?? [];
-	const params = script?.params ?? [];
+	const params = paramsManager.getAll();
+	const inputs = inputsManager.getAll();
+	const outputs = outputsManager.getAll();
+	// release memory
+	delete require.cache[require.resolve(path)];
 	const isValid =
-		script != null &&
-		validate(script.params) &&
-		validate(script.inputs) &&
-		validate(script.outputs);
+		script != null && validate(params) && validate(inputs) && validate(outputs);
 	socket.timeout(2000).emit(
 		Events.MESSAGE,
 		{
@@ -89,9 +172,9 @@ app.post('/scripts', upload.single('script'), (req, res) => {
 			data: {
 				name: file.filename,
 				displayName: req.body.name,
+				params,
 				inputs,
 				outputs,
-				params,
 				// inputs: [
 				// 	{
 				// 		name: 'test-pin',
@@ -112,7 +195,7 @@ app.post('/scripts', upload.single('script'), (req, res) => {
 		},
 		(err, resp) => {
 			if (err) {
-				console.log('Error while sending to backend: ', err);
+				console.log('Error while sending to backend:', err);
 				return res.status(500).send('Could not process request');
 			}
 			if (resp.err) {
