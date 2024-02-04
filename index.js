@@ -66,13 +66,21 @@ function startWorker(agentId, script) {
 		},
 	});
 
-	worker.on('message', m => console.log(`Message: ${m}`));
+	// worker.on('message', m => console.log(`Message: ${m}`));
 	worker.on('error', e => console.log(`Error: ${e}`));
 	worker.on('exit', code => {
-		console.log(`Worker stopped with exit code ${code}`);
+		console.log(`Worker for agent [${agentId}] stopped with exit code ${code}`);
 	});
 
-	workersMap.set(agentId, worker);
+	workersMap.set(+agentId, worker);
+}
+
+function stopWorker(agentId) {
+	agentId = +agentId;
+	console.log(`Stopping worker for agent with id: ${agentId}`);
+	const worker = workersMap.get(agentId);
+	worker?.postMessage('close');
+	workersMap.delete(agentId);
 }
 
 socket.on(Events.NEW_AGENT, ({ id, blueprintId, macAddr }) => {
@@ -103,6 +111,37 @@ socket.on(Events.NEW_AGENT, ({ id, blueprintId, macAddr }) => {
 				);
 			}
 			startWorker(id, script);
+		}
+	);
+});
+
+socket.on(Events.DEL_AGENT, stopWorker);
+
+// Not synchronized if this service is down while user deletes the blueprint
+socket.on(Events.DEL_BLUEPRINT, blueprintId => {
+	socket.timeout(2000).emit(
+		Events.MESSAGE,
+		{
+			to: Services.BACKEND,
+			event: Events.BLUEPRINT_NAME,
+			data: blueprintId,
+		},
+		(err, resp) => {
+			err ??= resp.err;
+			if (err) {
+				return console.log(
+					`Error while getting the name for blueprint with id ${id}:`,
+					err
+				);
+			}
+			const script = resp.data;
+			if (!script) {
+				return console.log(
+					'Could not get blueprint name for blueprint with id:',
+					blueprintId
+				);
+			}
+			fs.unlinkSync(`./scripts/${script}`);
 		}
 	);
 });
@@ -160,8 +199,8 @@ app.post('/scripts', upload.single('script'), (req, res) => {
 	const params = paramsManager.getAll();
 	const inputs = inputsManager.getAll();
 	const outputs = outputsManager.getAll();
-	// release memory
-	delete require.cache[require.resolve(path)];
+	// // release memory
+	// delete require.cache[require.resolve(path)];
 	const isValid =
 		script != null && validate(params) && validate(inputs) && validate(outputs);
 	socket.timeout(2000).emit(

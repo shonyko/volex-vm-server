@@ -89,8 +89,7 @@ client.on('close', () => {
 	callbacksManager.destroy();
 });
 
-// function keepAlive() {
-// 	setTimeout(keepAlive, 2000);
-// }
-
-// keepAlive();
+parentPort.addListener('message', _ => {
+	console.log('Closing...');
+	client.end(_ => parentPort.close());
+});

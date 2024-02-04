@@ -13,6 +13,8 @@ const Events = Object.freeze({
 	PIN_VALUE: 'pin_value',
 	PIN_SOURCE: 'pin_source',
 	NEW_AGENT: 'new_agent',
+	DEL_AGENT: 'del_agent',
+	DEL_BLUEPRINT: 'del_blueprint',
 	BLUEPRINT_NAME: 'blueprint_name',
 	CONNECT: 'conn',
 	DISCONNECT: 'dconn',
